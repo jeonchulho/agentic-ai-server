@@ -1,0 +1,38 @@
+version: '3.8'
+
+# Development override for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Mount source code for hot reload
+      - ./app:/app/app
+      - ./tests:/app/tests
+      - upload_data:/tmp/uploads
+    environment:
+      DEBUG: "True"
+      LOG_LEVEL: DEBUG
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Add legacy database for testing
+  legacy-mysql:
+    image: mysql:8.0
+    container_name: legacy-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: legacy_password
+      MYSQL_DATABASE: legacy_db
+    ports:
+      - "3307:3306"
+    networks:
+      - agentic-network
+
+volumes:
+  upload_data:
+
+networks:
+  agentic-network:
+    driver: bridge
