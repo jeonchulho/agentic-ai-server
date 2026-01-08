@@ -52,8 +52,13 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 aiofiles==23.2.1
 
+# Async Task Queue
+celery==5.3.6
+redis[hiredis]==5.0.1  # Using same Redis for Celery broker
+
 # Logging and Monitoring
 loguru==0.7.2
+structlog==24.1.0
 
 # Testing
 pytest==7.4.4

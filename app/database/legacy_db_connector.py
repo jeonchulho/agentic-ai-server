@@ -1,53 +1,102 @@
 """
-Legacy database connector for reading historical data.
+Legacy database connector for reading historical data with query optimization.
 """
 from typing import List, Dict, Any, Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import QueuePool
 from app.config import get_settings
+from app.database.redis_client import redis_client
+from loguru import logger
+import hashlib
+import json
 
 settings = get_settings()
 
 
 class LegacyDBConnector:
-    """Legacy database connector wrapper."""
+    """Legacy database connector wrapper with query optimization and caching."""
     
     def __init__(self):
-        """Initialize Legacy DB connection."""
+        """Initialize Legacy DB connection with optimized pool settings."""
         self.engine = create_engine(
             settings.legacy_db_url,
+            poolclass=QueuePool,
+            pool_size=10,
+            max_overflow=20,
             pool_pre_ping=True,
             pool_recycle=3600,
             echo=settings.DEBUG
         )
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        logger.info("Legacy DB connector initialized with query optimization")
     
     def get_session(self) -> Session:
         """Get a new database session."""
         return self.SessionLocal()
     
-    def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def _generate_cache_key(self, query: str, params: Optional[Dict[str, Any]] = None) -> str:
         """
-        Execute a raw SQL query and return results.
+        Generate cache key for query.
+        
+        Args:
+            query: SQL query
+            params: Query parameters
+            
+        Returns:
+            Cache key
+        """
+        query_string = f"{query}:{json.dumps(params or {}, sort_keys=True)}"
+        return f"legacy_query:{hashlib.md5(query_string.encode()).hexdigest()}"
+    
+    def execute_query(
+        self,
+        query: str,
+        params: Optional[Dict[str, Any]] = None,
+        use_cache: bool = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute a raw SQL query with caching support.
         
         Args:
             query: SQL query to execute
             params: Optional query parameters
+            use_cache: Whether to use cache (default: from settings)
             
         Returns:
             List of result rows as dictionaries
         """
+        use_cache = use_cache if use_cache is not None else settings.ENABLE_QUERY_CACHE
+        
+        # Check cache first
+        if use_cache:
+            cache_key = self._generate_cache_key(query, params)
+            cached = redis_client.get(cache_key)
+            if cached:
+                logger.debug(f"Query cache hit: {cache_key[:20]}...")
+                return cached
+        
         session = self.get_session()
         try:
+            logger.debug(f"Executing query: {query[:100]}...")
             result = session.execute(text(query), params or {})
             
             # Convert to list of dicts
             columns = result.keys()
             rows = [dict(zip(columns, row)) for row in result.fetchall()]
             
+            # Cache result
+            if use_cache and rows:
+                cache_key = self._generate_cache_key(query, params)
+                redis_client.set(cache_key, rows, settings.QUERY_CACHE_TTL)
+                logger.debug(f"Query result cached: {cache_key[:20]}...")
+            
             return rows
         except Exception as e:
-            print(f"Query execution error: {e}")
+            logger.error(f"Query execution error: {e}")
+            return []
+        finally:
+            session.close()
             return []
         finally:
             session.close()

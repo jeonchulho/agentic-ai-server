@@ -65,6 +65,27 @@ class Settings(BaseSettings):
     MAX_WORKERS: int = 4
     ASYNC_QUEUE_SIZE: int = 100
     
+    # Chunking Configuration for Large Files
+    CHUNK_SIZE: int = 1000  # Characters per chunk
+    CHUNK_OVERLAP: int = 100  # Overlap between chunks
+    MAX_CHUNK_SIZE: int = 2000  # Maximum chunk size
+    
+    # Korean Language Processing
+    KOREAN_ENCODING: str = "utf-8"
+    HWP_FALLBACK_ENCODING: str = "cp949"
+    ENABLE_KOREAN_OPTIMIZATION: bool = True
+    
+    # Celery Configuration
+    CELERY_BROKER_URL: str = ""
+    CELERY_RESULT_BACKEND: str = ""
+    CELERY_TASK_ALWAYS_EAGER: bool = False  # Set to True for synchronous testing
+    
+    # Performance Optimization
+    ENABLE_QUERY_CACHE: bool = True
+    QUERY_CACHE_TTL: int = 300  # 5 minutes
+    BATCH_SIZE: int = 100  # For batch operations
+    MAX_CONCURRENT_TASKS: int = 10
+    
     @property
     def mysql_url(self) -> str:
         """Generate MySQL connection URL."""
