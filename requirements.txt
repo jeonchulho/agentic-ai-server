@@ -1,7 +1,7 @@
 # FastAPI and Server
-fastapi==0.109.0
+fastapi==0.109.1  # Updated from 0.109.0 to fix ReDoS vulnerability
 uvicorn[standard]==0.27.0
-python-multipart==0.0.6
+python-multipart==0.0.18  # Updated from 0.0.6 to fix DoS and ReDoS vulnerabilities
 pydantic==2.5.3
 pydantic-settings==2.1.0
 
@@ -9,13 +9,13 @@ pydantic-settings==2.1.0
 langchain==0.1.4
 langgraph==0.0.20
 langchain-openai==0.0.5
-langchain-community==0.0.16
+langchain-community==0.3.27  # Updated from 0.0.16 to fix XXE, SSRF, and pickle deserialization vulnerabilities
 openai==1.10.0
 
 # Database - MySQL
 sqlalchemy==2.0.25
-pymysql==1.1.0
-cryptography==42.0.0
+pymysql==1.1.1  # Updated from 1.1.0 to fix SQL injection vulnerability
+cryptography==42.0.4  # Updated from 42.0.0 to fix NULL pointer dereference vulnerability
 
 # Database - Redis
 redis==5.0.1

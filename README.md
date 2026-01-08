@@ -280,10 +280,25 @@ pytest --cov=app tests/
 
 ## 🔒 보안
 
+### 보안 업데이트
+
+모든 의존성이 최신 보안 패치로 업데이트되었습니다:
+- `fastapi`: 0.109.1 (ReDoS 취약점 수정)
+- `python-multipart`: 0.0.18 (DoS 취약점 수정)
+- `cryptography`: 42.0.4 (NULL pointer 취약점 수정)
+- `pymysql`: 1.1.1 (SQL injection 취약점 수정)
+- `langchain-community`: 0.3.27 (XXE, SSRF, pickle 취약점 수정)
+
+### 보안 모범 사례
+
 - API 키 환경 변수 관리
 - CORS 설정
 - JWT 인증 (향후 구현 예정)
 - SQL Injection 방지 (SQLAlchemy ORM)
+- Input validation (Pydantic)
+- 정기적인 의존성 업데이트
+
+자세한 내용은 [SECURITY.md](SECURITY.md)를 참조하세요.
 
 ## 📝 환경 변수
 
