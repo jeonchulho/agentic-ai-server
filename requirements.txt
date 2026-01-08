@@ -1,0 +1,69 @@
+# FastAPI and Server
+fastapi==0.109.1  # Updated from 0.109.0 to fix ReDoS vulnerability
+uvicorn[standard]==0.27.0
+python-multipart==0.0.18  # Updated from 0.0.6 to fix DoS and ReDoS vulnerabilities
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# LangChain and LangGraph
+langchain==0.1.4
+langgraph==0.0.20
+langchain-openai==0.0.5
+langchain-community==0.3.27  # Updated from 0.0.16 to fix XXE, SSRF, and pickle deserialization vulnerabilities
+openai==1.10.0
+
+# Database - MySQL
+sqlalchemy==2.0.25
+pymysql==1.1.1  # Updated from 1.1.0 to fix SQL injection vulnerability
+cryptography==42.0.4  # Updated from 42.0.0 to fix NULL pointer dereference vulnerability
+
+# Database - Redis
+redis==5.0.1
+hiredis==2.3.2
+
+# Database - Milvus
+pymilvus==2.3.5
+
+# Document Parsers - PDF
+pypdf2==3.0.1
+pdfplumber==0.10.3
+
+# Document Parsers - Word
+python-docx==1.1.0
+
+# Document Parsers - PowerPoint
+python-pptx==0.6.23
+
+# Document Parsers - Excel
+openpyxl==3.1.2
+xlrd==2.0.1
+
+# Document Parsers - HWP
+olefile==0.47
+hwp5==0.0.0a4
+
+# Document Parsers - Text
+chardet==5.2.0
+python-magic==0.4.27
+
+# Utilities
+python-dotenv==1.0.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+aiofiles==23.2.1
+
+# Async Task Queue
+celery==5.3.6
+redis[hiredis]==5.0.1  # Using same Redis for Celery broker
+
+# Logging and Monitoring
+loguru==0.7.2
+structlog==24.1.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+httpx==0.26.0
+
+# Vector Embeddings
+sentence-transformers==2.3.1
