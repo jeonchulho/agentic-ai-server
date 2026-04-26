@@ -6,7 +6,7 @@ autonomously calls tools in a loop (ReAct pattern), and returns a final answer.
 ## Architecture
 
 ```
-Client  →  POST /chat  →  FastAPI  →  Agent Loop  →  LLM (OpenAI GPT-4o)
+Client  →  POST /chat  →  FastAPI  →  Agent Loop  →  LLM (OpenAI / Ollama / Claude / Gemini)
                                             ↕
                                         Tools (calculate, fetch_url, run_python, …)
 ```
@@ -21,6 +21,7 @@ app/
 ├── session_store.py     # In-memory conversation history
 ├── agent/
 │   ├── loop.py          # Agentic loop (tool_call → LLM → … → final answer)
+│   ├── llm_factory.py   # LangChain model factory (OpenAI / Ollama / Claude / Gemini)
 │   ├── tools.py         # Tool definitions + registry
 │   └── prompts.py       # System prompt
 └── api/
@@ -34,9 +35,9 @@ app/
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Configure your OpenAI API key
+# 2. Configure your LLM provider
 cp .env.example .env
-# Edit .env and set OPENAI_API_KEY=sk-...
+# Edit .env — set LLM_PROVIDER and the matching API key (see Configuration below)
 
 # 3. Run the server
 uvicorn app.main:app --reload
@@ -90,8 +91,15 @@ curl -X POST http://localhost:8000/chat \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | *(required)* | Your OpenAI API key |
-| `OPENAI_MODEL` | `gpt-4o` | Model to use |
+| `LLM_PROVIDER` | `openai` | Provider: `openai` · `ollama` · `claude` · `gemini` |
+| `OPENAI_API_KEY` | *(required for openai)* | OpenAI API key |
+| `OPENAI_MODEL` | `gpt-4o` | OpenAI model name |
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama endpoint (OpenAI-compatible) |
+| `OLLAMA_MODEL` | `llama3.2` | Ollama model name |
+| `ANTHROPIC_API_KEY` | *(required for claude)* | Anthropic API key |
+| `CLAUDE_MODEL` | `claude-3-5-sonnet-20241022` | Claude model name |
+| `GOOGLE_API_KEY` | *(required for gemini)* | Google AI API key |
+| `GEMINI_MODEL` | `gemini-1.5-flash` | Gemini model name |
 | `AGENT_MAX_ITERATIONS` | `10` | Max tool-call iterations per request |
 
 ## Adding a new tool

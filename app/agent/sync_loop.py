@@ -1,8 +1,11 @@
-"""Synchronous agentic loop — same logic as loop.py but uses the blocking
-``openai.OpenAI`` client instead of ``AsyncOpenAI``.
+"""Synchronous agentic loop — blocking counterpart of loop.py that uses the
+``openai.OpenAI`` client directly.
 
-Use this module when you cannot run an asyncio event-loop (e.g. in a plain
-script, a thread, or a synchronous web framework like Flask/Django).
+.. note::
+   Unlike ``loop.py`` (which supports OpenAI, Ollama, Claude and Gemini via
+   LangChain), this module is **OpenAI-only**.  It is intended for contexts
+   where an asyncio event-loop is unavailable (e.g. plain scripts, threads, or
+   synchronous frameworks like Flask/Django).
 
 Public API
 ----------

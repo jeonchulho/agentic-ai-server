@@ -1,12 +1,26 @@
 """Agentic loop — repeatedly calls the LLM and executes tools until a final
-text answer is produced or the iteration limit is reached."""
+text answer is produced or the iteration limit is reached.
+
+Supports multiple LLM providers via LangChain (set ``LLM_PROVIDER`` in .env):
+  - ``openai``  (default) — OpenAI ChatGPT
+  - ``ollama``            — local Ollama models (OpenAI-compatible endpoint)
+  - ``claude``            — Anthropic Claude
+  - ``gemini``            — Google Gemini
+"""
 from __future__ import annotations
 
 import json
 from typing import Any, AsyncIterator
 
-from openai import AsyncOpenAI
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
+from app.agent.llm_factory import get_chat_model
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import TOOLS_SCHEMA, execute_tool
 from app.config import settings
@@ -17,51 +31,83 @@ class MaxIterationsExceeded(RuntimeError):
     """Raised when the agent exceeds its maximum iteration count."""
 
 
-def _to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
-    """Convert Pydantic Message objects to the dict format expected by OpenAI."""
-    result: list[dict[str, Any]] = []
+# ---------------------------------------------------------------------------
+# Message conversion helpers
+# ---------------------------------------------------------------------------
+
+def _to_langchain_messages(messages: list[Message]) -> list[BaseMessage]:
+    """Convert Pydantic Message objects to LangChain message objects."""
+    result: list[BaseMessage] = []
     for m in messages:
-        entry: dict[str, Any] = {"role": m.role}
-        if m.content is not None:
-            entry["content"] = m.content
-        if m.tool_call_id is not None:
-            entry["tool_call_id"] = m.tool_call_id
-        if m.name is not None:
-            entry["name"] = m.name
-        if m.tool_calls is not None:
-            entry["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in m.tool_calls
-            ]
-        result.append(entry)
+        if m.role == "system":
+            result.append(SystemMessage(content=m.content or ""))
+        elif m.role == "user":
+            result.append(HumanMessage(content=m.content or ""))
+        elif m.role == "assistant":
+            if m.tool_calls:
+                tc_list = [
+                    {
+                        "name": tc.function.name,
+                        "args": json.loads(tc.function.arguments),
+                        "id": tc.id,
+                        "type": "tool_call",
+                    }
+                    for tc in m.tool_calls
+                ]
+                result.append(AIMessage(content=m.content or "", tool_calls=tc_list))
+            else:
+                result.append(AIMessage(content=m.content or ""))
+        elif m.role == "tool":
+            result.append(
+                ToolMessage(
+                    content=m.content or "",
+                    tool_call_id=m.tool_call_id or "",
+                )
+            )
     return result
 
 
-def _message_from_assistant(assistant_message: Any) -> Message:
-    """Build a Message from an OpenAI assistant ChatCompletionMessage, preserving tool_calls."""
+def _extract_text(content: Any) -> str:
+    """Extract plain text from a LangChain message content value.
+
+    Some providers (e.g. Claude) return a list of typed content blocks instead
+    of a plain string.  This helper normalises both forms to a single string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return ""
+
+
+def _message_from_ai(response: AIMessage) -> Message:
+    """Convert a LangChain AIMessage to our Pydantic Message model."""
     tool_calls = None
-    if assistant_message.tool_calls:
+    if response.tool_calls:
         tool_calls = [
             ToolCall(
-                id=tc.id,
-                type=tc.type,
+                id=tc["id"],
+                type="function",
                 function=ToolCallFunction(
-                    name=tc.function.name,
-                    arguments=tc.function.arguments,
+                    name=tc["name"],
+                    arguments=json.dumps(tc["args"]),
                 ),
             )
-            for tc in assistant_message.tool_calls
+            for tc in response.tool_calls
         ]
-    return Message(
-        role="assistant",
-        content=assistant_message.content,
-        tool_calls=tool_calls,
-    )
+    content = _extract_text(response.content) or None
+    return Message(role="assistant", content=content, tool_calls=tool_calls)
 
+
+# ---------------------------------------------------------------------------
+# Agentic loop — non-streaming
+# ---------------------------------------------------------------------------
 
 async def run_agent(
     messages: list[Message],
@@ -74,7 +120,8 @@ async def run_agent(
         max_iterations: Maximum number of LLM calls. Defaults to
             ``settings.agent_max_iterations``.
     """
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    model = get_chat_model()
+    model_with_tools = model.bind_tools(TOOLS_SCHEMA)
     limit = max_iterations or settings.agent_max_iterations
     tool_calls_made: list[ToolCallRecord] = []
 
@@ -84,28 +131,19 @@ async def run_agent(
         working_messages.insert(0, Message(role="system", content=SYSTEM_PROMPT))
 
     for _ in range(limit):
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=_to_openai_messages(working_messages),
-            tools=TOOLS_SCHEMA,
-            tool_choice="auto",
+        response: AIMessage = await model_with_tools.ainvoke(
+            _to_langchain_messages(working_messages)
         )
-
-        choice = response.choices[0]
-        assistant_message = choice.message
 
         # Record the assistant turn (preserves tool_calls so subsequent tool
         # role messages are valid when resent to the API)
-        working_messages.append(_message_from_assistant(assistant_message))
+        working_messages.append(_message_from_ai(response))
 
-        if choice.finish_reason == "tool_calls" and assistant_message.tool_calls:
+        if response.tool_calls:
             # Execute every requested tool call
-            for tc in assistant_message.tool_calls:
-                fn_name = tc.function.name
-                try:
-                    fn_args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    fn_args = {}
+            for tc in response.tool_calls:
+                fn_name = tc["name"]
+                fn_args = tc["args"]
 
                 result = await execute_tool(fn_name, fn_args)
                 tool_calls_made.append(
@@ -121,19 +159,23 @@ async def run_agent(
                     Message(
                         role="tool",
                         content=result,
-                        tool_call_id=tc.id,
+                        tool_call_id=tc["id"],
                         name=fn_name,
                     )
                 )
         else:
             # Final text answer
-            final_reply = assistant_message.content or ""
+            final_reply = _extract_text(response.content)
             return final_reply, tool_calls_made
 
     raise MaxIterationsExceeded(
         f"Agent did not produce a final answer within {limit} iterations."
     )
 
+
+# ---------------------------------------------------------------------------
+# Agentic loop — streaming
+# ---------------------------------------------------------------------------
 
 async def stream_agent(
     messages: list[Message],
@@ -147,7 +189,8 @@ async def stream_agent(
     - ``event: done\\ndata: [DONE]\\n\\n``       — end of stream
     - ``event: error\\ndata: <message>\\n\\n``   — error
     """
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    model = get_chat_model()
+    model_with_tools = model.bind_tools(TOOLS_SCHEMA)
     limit = max_iterations or settings.agent_max_iterations
 
     working_messages = list(messages)
@@ -157,29 +200,20 @@ async def stream_agent(
     for iteration in range(limit):
         is_last_iteration = iteration == limit - 1
 
-        # Non-streaming call to detect whether this turn has tool_calls
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=_to_openai_messages(working_messages),
-            tools=TOOLS_SCHEMA,
-            tool_choice="auto",
+        # Non-streaming call to detect whether this turn requires tool calls
+        response: AIMessage = await model_with_tools.ainvoke(
+            _to_langchain_messages(working_messages)
         )
 
-        choice = response.choices[0]
-        assistant_message = choice.message
+        working_messages.append(_message_from_ai(response))
 
-        working_messages.append(_message_from_assistant(assistant_message))
-
-        if choice.finish_reason == "tool_calls" and assistant_message.tool_calls:
-            for tc in assistant_message.tool_calls:
-                fn_name = tc.function.name
-                try:
-                    fn_args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    fn_args = {}
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                fn_name = tc["name"]
+                fn_args = tc["args"]
 
                 yield (
-                    f"event: tool_call\ndata: "
+                    "event: tool_call\ndata: "
                     + json.dumps({"tool": fn_name, "arguments": fn_args})
                     + "\n\n"
                 )
@@ -189,7 +223,7 @@ async def stream_agent(
                     Message(
                         role="tool",
                         content=result,
-                        tool_call_id=tc.id,
+                        tool_call_id=tc["id"],
                         name=fn_name,
                     )
                 )
@@ -199,16 +233,13 @@ async def stream_agent(
             # If we hit the last iteration after tool calls, fall through to
             # a final streaming call below.
 
-        # Stream the final answer token-by-token using the OpenAI streaming API
-        async with client.chat.completions.stream(
-            model=settings.openai_model,
-            messages=_to_openai_messages(working_messages),
-        ) as stream:
-            async for text in stream.text_stream:
-                if text:
-                    # JSON-encode so that tokens containing newlines or special
-                    # characters are safe to embed in a single SSE data line.
-                    yield f"event: token\ndata: {json.dumps(text)}\n\n"
+        # Stream the final answer token-by-token
+        async for chunk in model.astream(_to_langchain_messages(working_messages)):
+            text = _extract_text(chunk.content)
+            if text:
+                # JSON-encode so that tokens containing newlines or special
+                # characters are safe to embed in a single SSE data line.
+                yield f"event: token\ndata: {json.dumps(text)}\n\n"
 
         yield "event: done\ndata: [DONE]\n\n"
         return

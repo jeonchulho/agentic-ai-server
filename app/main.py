@@ -8,7 +8,8 @@ from app.config import settings
 app = FastAPI(
     title="Agentic AI Server",
     description=(
-        "A FastAPI server that runs an agentic loop powered by OpenAI GPT-4o. "
+        "A FastAPI server that runs an agentic loop powered by a configurable LLM provider "
+        "(OpenAI, Ollama, Claude, or Gemini). "
         "The agent autonomously calls tools and iterates until it produces a final answer."
     ),
     version="0.1.0",
