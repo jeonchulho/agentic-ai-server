@@ -27,7 +27,7 @@ from langchain_core.messages import (
 )
 
 from app.agent.llm_factory import get_chat_model
-from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.prompts import ORCHESTRATOR_PROMPT
 from app.agent.tools import TOOLS_SCHEMA, execute_tool
 from app.config import settings
 from app.models import Message, ToolCall, ToolCallFunction, ToolCallRecord
@@ -194,7 +194,7 @@ async def run_agent(
     # 시스템 프롬프트 자동 삽입 — 이미 있으면 중복 삽입하지 않는다
     working_messages = list(messages)
     if not working_messages or working_messages[0].role != "system":
-        working_messages.insert(0, Message(role="system", content=SYSTEM_PROMPT))
+        working_messages.insert(0, Message(role="system", content=ORCHESTRATOR_PROMPT))
 
     for _ in range(limit):
         # LLM 호출: 현재 대화 전체를 LangChain 형식으로 변환해 전달
@@ -275,7 +275,7 @@ async def stream_agent(
 
     working_messages = list(messages)
     if not working_messages or working_messages[0].role != "system":
-        working_messages.insert(0, Message(role="system", content=SYSTEM_PROMPT))
+        working_messages.insert(0, Message(role="system", content=ORCHESTRATOR_PROMPT))
 
     for iteration in range(limit):
         is_last_iteration = iteration == limit - 1
