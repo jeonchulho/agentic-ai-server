@@ -208,7 +208,7 @@ async def run_agent(
         (final_reply, tool_calls_made) 튜플.
     """
     # 마지막 user 메시지 기반으로 단일/멀티 에이전트 모드 결정
-    mode = route_request(_get_last_user_content(messages))
+    mode = await route_request(_get_last_user_content(messages))
     if mode == "multi":
         model_with_tools = get_model_with_tools()
         system_prompt = build_orchestrator_prompt()
@@ -296,7 +296,7 @@ async def stream_agent(
         max_iterations: LLM 최대 호출 횟수.
     """
     # 마지막 user 메시지 기반으로 단일/멀티 에이전트 모드 결정
-    mode = route_request(_get_last_user_content(messages))
+    mode = await route_request(_get_last_user_content(messages))
     if mode == "multi":
         model_with_tools = get_model_with_tools()
         system_prompt = build_orchestrator_prompt()
