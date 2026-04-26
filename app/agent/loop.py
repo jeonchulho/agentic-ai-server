@@ -27,8 +27,10 @@ from langchain_core.messages import (
 )
 
 from app.agent.llm_factory import get_chat_model
-from app.agent.prompts import ORCHESTRATOR_PROMPT
-from app.agent.tools import TOOLS_SCHEMA, execute_tool
+from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.router import route_request
+from app.agent.sub_agent_registry import build_orchestrator_prompt
+from app.agent.tools import TOOLS_SCHEMA, BASE_TOOLS_SCHEMA, execute_tool
 from app.config import settings
 from app.models import Message, ToolCall, ToolCallFunction, ToolCallRecord
 
@@ -60,6 +62,17 @@ def get_model_with_tools():
     # get_chat_model() 자체도 lru_cache 로 캐시되어 있으므로
     # 매번 새 모델 객체가 생성되지 않는다.
     return get_chat_model().bind_tools(TOOLS_SCHEMA)
+
+
+@lru_cache(maxsize=1)
+def get_single_agent_model():
+    """BASE_TOOLS_SCHEMA 만 바인딩된 단일 에이전트용 모델을 반환한다.
+
+    ``delegate_to_agent`` 를 제외한 기본 도구 세트만 포함하므로,
+    단순 요청 처리 시 오케스트레이터 프롬프트·스키마를 불필요하게
+    LLM 컨텍스트에 포함시키지 않는다.
+    """
+    return get_chat_model().bind_tools(BASE_TOOLS_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +174,14 @@ def _message_from_ai(response: AIMessage) -> Message:
     return Message(role="assistant", content=content, tool_calls=tool_calls)
 
 
+def _get_last_user_content(messages: list[Message]) -> str:
+    """대화 기록에서 마지막 user 메시지의 내용을 반환한다."""
+    for m in reversed(messages):
+        if m.role == "user":
+            return m.content or ""
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # 에이전틱 루프 — 비스트리밍 (단일 응답 반환)
 # ---------------------------------------------------------------------------
@@ -186,15 +207,22 @@ async def run_agent(
     Returns:
         (final_reply, tool_calls_made) 튜플.
     """
-    # 캐시된 tool-bound 모델을 가져온다 (첫 호출 이후는 인스턴스 재사용)
-    model_with_tools = get_model_with_tools()
+    # 마지막 user 메시지 기반으로 단일/멀티 에이전트 모드 결정
+    mode = route_request(_get_last_user_content(messages))
+    if mode == "multi":
+        model_with_tools = get_model_with_tools()
+        system_prompt = build_orchestrator_prompt()
+    else:
+        model_with_tools = get_single_agent_model()
+        system_prompt = SYSTEM_PROMPT
+
     limit = max_iterations or settings.agent_max_iterations
     tool_calls_made: list[ToolCallRecord] = []
 
     # 시스템 프롬프트 자동 삽입 — 이미 있으면 중복 삽입하지 않는다
     working_messages = list(messages)
     if not working_messages or working_messages[0].role != "system":
-        working_messages.insert(0, Message(role="system", content=ORCHESTRATOR_PROMPT))
+        working_messages.insert(0, Message(role="system", content=system_prompt))
 
     for _ in range(limit):
         # LLM 호출: 현재 대화 전체를 LangChain 형식으로 변환해 전달
@@ -267,15 +295,22 @@ async def stream_agent(
         messages:       사용자/어시스턴트 대화 기록.
         max_iterations: LLM 최대 호출 횟수.
     """
-    # 캐시된 tool-bound 모델 (ainvoke 용) + 기본 모델 (astream 용)
-    model_with_tools = get_model_with_tools()
+    # 마지막 user 메시지 기반으로 단일/멀티 에이전트 모드 결정
+    mode = route_request(_get_last_user_content(messages))
+    if mode == "multi":
+        model_with_tools = get_model_with_tools()
+        system_prompt = build_orchestrator_prompt()
+    else:
+        model_with_tools = get_single_agent_model()
+        system_prompt = SYSTEM_PROMPT
+
     # get_chat_model() 은 lru_cache 로 캐시되어 있으므로 새 객체 생성 없음
     model = get_chat_model()
     limit = max_iterations or settings.agent_max_iterations
 
     working_messages = list(messages)
     if not working_messages or working_messages[0].role != "system":
-        working_messages.insert(0, Message(role="system", content=ORCHESTRATOR_PROMPT))
+        working_messages.insert(0, Message(role="system", content=system_prompt))
 
     for iteration in range(limit):
         is_last_iteration = iteration == limit - 1

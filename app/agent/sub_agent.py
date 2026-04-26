@@ -27,7 +27,7 @@ from langchain_core.messages import (
 )
 
 from app.agent.llm_factory import get_chat_model
-from app.agent.prompts import get_sub_agent_prompt
+from app.agent.sub_agent_registry import get_sub_agent_prompt
 
 
 class SubAgentMaxIterationsExceeded(RuntimeError):

@@ -398,42 +398,9 @@ TOOLS_REGISTRY: dict[str, Callable[..., Awaitable[str]]] = {
     "delegate_to_agent": delegate_to_agent,
 }
 
-TOOLS_SCHEMA: list[dict[str, Any]] = BASE_TOOLS_SCHEMA + [
-    {
-        "type": "function",
-        "function": {
-            "name": "delegate_to_agent",
-            "description": (
-                "Delegate a subtask to a specialised sub-agent and return its result. "
-                "Use this to break a complex task into steps: each step can be handled "
-                "by a sub-agent with the appropriate role. "
-                "Pass any relevant context (e.g. results from previous steps) inside the task string. "
-                "Roles: 'researcher' (search/retrieve), 'analyst' (calculate/code), 'writer' (summarise/compose)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": (
-                            "Clear description of the subtask the sub-agent should perform. "
-                            "Include all necessary context so the sub-agent can work independently."
-                        ),
-                    },
-                    "role": {
-                        "type": "string",
-                        "enum": ["researcher", "analyst", "writer"],
-                        "description": (
-                            "Sub-agent role: 'researcher' for info retrieval, "
-                            "'analyst' for data analysis/code, 'writer' for text/summaries."
-                        ),
-                    },
-                },
-                "required": ["task"],
-            },
-        },
-    },
-]
+from app.agent.sub_agent_registry import build_delegate_schema  # noqa: E402
+
+TOOLS_SCHEMA: list[dict[str, Any]] = BASE_TOOLS_SCHEMA + [build_delegate_schema()]
 
 
 async def execute_tool(name: str, arguments: dict[str, Any]) -> str:
