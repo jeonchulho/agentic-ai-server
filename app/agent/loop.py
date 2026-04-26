@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.tools import TOOLS_SCHEMA, execute_tool
 from app.config import settings
-from app.models import Message, ToolCallRecord
+from app.models import Message, ToolCall, ToolCallFunction, ToolCallRecord
 
 
 class MaxIterationsExceeded(RuntimeError):
@@ -28,8 +28,39 @@ def _to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
             entry["tool_call_id"] = m.tool_call_id
         if m.name is not None:
             entry["name"] = m.name
+        if m.tool_calls is not None:
+            entry["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in m.tool_calls
+            ]
         result.append(entry)
     return result
+
+
+def _message_from_assistant(assistant_message: Any) -> Message:
+    """Build a Message from an OpenAI assistant ChatCompletionMessage, preserving tool_calls."""
+    tool_calls = None
+    if assistant_message.tool_calls:
+        tool_calls = [
+            ToolCall(
+                id=tc.id,
+                type=tc.type,
+                function=ToolCallFunction(
+                    name=tc.function.name,
+                    arguments=tc.function.arguments,
+                ),
+            )
+            for tc in assistant_message.tool_calls
+        ]
+    return Message(
+        role="assistant",
+        content=assistant_message.content,
+        tool_calls=tool_calls,
+    )
 
 
 async def run_agent(
@@ -63,13 +94,9 @@ async def run_agent(
         choice = response.choices[0]
         assistant_message = choice.message
 
-        # Record the assistant turn (may contain tool_calls)
-        working_messages.append(
-            Message(
-                role="assistant",
-                content=assistant_message.content,
-            )
-        )
+        # Record the assistant turn (preserves tool_calls so subsequent tool
+        # role messages are valid when resent to the API)
+        working_messages.append(_message_from_assistant(assistant_message))
 
         if choice.finish_reason == "tool_calls" and assistant_message.tool_calls:
             # Execute every requested tool call
@@ -141,9 +168,7 @@ async def stream_agent(
         choice = response.choices[0]
         assistant_message = choice.message
 
-        working_messages.append(
-            Message(role="assistant", content=assistant_message.content)
-        )
+        working_messages.append(_message_from_assistant(assistant_message))
 
         if choice.finish_reason == "tool_calls" and assistant_message.tool_calls:
             for tc in assistant_message.tool_calls:
