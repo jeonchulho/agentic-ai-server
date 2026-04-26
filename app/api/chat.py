@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 from fastapi import APIRouter, HTTPException
@@ -64,9 +65,9 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             max_iterations=request.max_iterations,
         ):
             if chunk.startswith("event: token"):
-                # Extract raw token text (data line without the trailing newlines)
-                data_line = chunk.split("data: ", 1)[1].split("\n")[0]
-                full_reply_parts.append(data_line)
+                # Token data is JSON-encoded; decode to get the raw text.
+                data_json = chunk.split("data: ", 1)[1].rstrip("\n")
+                full_reply_parts.append(json.loads(data_json))
             yield chunk
 
         # Persist after streaming is complete

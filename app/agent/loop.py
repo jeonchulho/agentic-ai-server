@@ -206,7 +206,9 @@ async def stream_agent(
         ) as stream:
             async for text in stream.text_stream:
                 if text:
-                    yield f"event: token\ndata: {text}\n\n"
+                    # JSON-encode so that tokens containing newlines or special
+                    # characters are safe to embed in a single SSE data line.
+                    yield f"event: token\ndata: {json.dumps(text)}\n\n"
 
         yield "event: done\ndata: [DONE]\n\n"
         return
