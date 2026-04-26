@@ -7,6 +7,7 @@ script, a thread, or a synchronous web framework like Flask/Django).
 Public API
 ----------
 - ``run_agent_sync(messages, max_iterations)`` → ``(final_reply, tool_calls_made)``
+- ``stream_agent_sync(messages, max_iterations)`` → ``Iterator[str]`` (SSE strings)
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import math
 import operator
 import subprocess
 import typing
-from typing import Any
+from typing import Any, Iterator
 
 from openai import OpenAI
 
@@ -298,3 +299,99 @@ def run_agent_sync(
     raise MaxIterationsExceeded(
         f"Agent did not produce a final answer within {limit} iterations."
     )
+
+
+def stream_agent_sync(
+    messages: list[Message],
+    max_iterations: int | None = None,
+) -> Iterator[str]:
+    """Stream the agentic loop as Server-Sent Events (SSE) — blocking generator.
+
+    This is the synchronous counterpart of ``loop.stream_agent``. It yields
+    SSE-formatted strings one at a time, making it suitable for use with
+    synchronous frameworks such as Flask (``Response(stream_with_context(...))``)
+    or plain scripts that consume the generator directly.
+
+    Yields SSE-formatted strings. Each event is one of:
+    - ``event: token\\ndata: <text>\\n\\n``       — assistant text token
+    - ``event: tool_call\\ndata: <json>\\n\\n``   — tool being executed
+    - ``event: done\\ndata: [DONE]\\n\\n``          — end of stream
+    - ``event: error\\ndata: <message>\\n\\n``    — error
+
+    Args:
+        messages: Conversation history (user/assistant turns).
+        max_iterations: Maximum number of LLM calls. Defaults to
+            ``settings.agent_max_iterations``.
+    """
+    client = OpenAI(api_key=settings.openai_api_key)
+    limit = max_iterations or settings.agent_max_iterations
+
+    working_messages = list(messages)
+    if not working_messages or working_messages[0].role != "system":
+        working_messages.insert(0, Message(role="system", content=SYSTEM_PROMPT))
+
+    for iteration in range(limit):
+        is_last_iteration = iteration == limit - 1
+
+        # Non-streaming call to detect whether this turn has tool_calls
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=_to_openai_messages(working_messages),
+            tools=TOOLS_SCHEMA,
+            tool_choice="auto",
+        )
+
+        choice = response.choices[0]
+        assistant_message = choice.message
+
+        working_messages.append(_message_from_assistant(assistant_message))
+
+        if choice.finish_reason == "tool_calls" and assistant_message.tool_calls:
+            for tc in assistant_message.tool_calls:
+                fn_name = tc.function.name
+                try:
+                    fn_args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    fn_args = {}
+
+                yield (
+                    f"event: tool_call\ndata: "
+                    + json.dumps({"tool": fn_name, "arguments": fn_args})
+                    + "\n\n"
+                )
+
+                result = execute_tool_sync(fn_name, fn_args)
+                working_messages.append(
+                    Message(
+                        role="tool",
+                        content=result,
+                        tool_call_id=tc.id,
+                        name=fn_name,
+                    )
+                )
+
+            if not is_last_iteration:
+                continue
+            # If we hit the last iteration after tool calls, fall through to
+            # a final streaming call below.
+
+        # Stream the final answer token-by-token using the OpenAI streaming API
+        with client.chat.completions.stream(
+            model=settings.openai_model,
+            messages=_to_openai_messages(working_messages),
+        ) as stream:
+            for text in stream.text_stream:
+                if text:
+                    # JSON-encode so that tokens containing newlines or special
+                    # characters are safe to embed in a single SSE data line.
+                    yield f"event: token\ndata: {json.dumps(text)}\n\n"
+
+        yield "event: done\ndata: [DONE]\n\n"
+        return
+
+    yield (
+        "event: error\ndata: "
+        + json.dumps({"message": f"Max iterations ({limit}) exceeded."})
+        + "\n\n"
+    )
+    yield "event: done\ndata: [DONE]\n\n"
