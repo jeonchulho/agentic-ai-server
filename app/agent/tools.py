@@ -233,6 +233,94 @@ async def get_stock_price(ticker: str) -> str:
         return f"주가 조회 오류: {exc}"
 
 
+async def summarize_large_text(text: str, chunk_size: int = 4000) -> str:
+    """큰 텍스트를 청크로 분할하여 asyncio.gather()로 병렬 요약한 뒤 최종 요약을 반환한다.
+
+    Map-Reduce 패턴:
+      1. Map   : 텍스트를 ``chunk_size`` 단위로 분할 → 각 청크를 LLM으로 병렬 요약
+      2. Reduce: 부분 요약들을 하나의 최종 요약으로 통합
+
+    청크가 하나뿐이면 Map 단계만 수행하여 즉시 반환한다.
+
+    Args:
+        text:       요약할 전체 텍스트.
+        chunk_size: 각 청크의 최대 문자 수. 기본값 4000 (≈ 1,000 토큰).
+
+    Returns:
+        최종 통합 요약 문자열.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage  # noqa: PLC0415
+
+    from app.agent.llm_factory import get_chat_model  # noqa: PLC0415
+
+    text = text.strip()
+    if not text:
+        return "요약할 텍스트가 없습니다."
+
+    def _extract(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            return "".join(parts)
+        return ""
+
+    chunks = [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+    model = get_chat_model()
+    total = len(chunks)
+
+    async def _summarize_chunk(chunk: str, idx: int) -> str:
+        try:
+            response = await model.ainvoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You are a summarization assistant. "
+                            "Summarize the given text concisely, preserving all key information."
+                        )
+                    ),
+                    HumanMessage(
+                        content=f"Summarize the following text (part {idx + 1}/{total}):\n\n{chunk}"
+                    ),
+                ]
+            )
+            return _extract(response.content)
+        except Exception as exc:  # noqa: BLE001
+            return f"[Part {idx + 1} summary error: {exc}]"
+
+    if total == 1:
+        return await _summarize_chunk(chunks[0], 0)
+
+    # ── Map 단계: 모든 청크를 병렬로 요약 ────────────────────────────────────
+    partial_summaries: list[str] = list(
+        await asyncio.gather(*[_summarize_chunk(chunk, idx) for idx, chunk in enumerate(chunks)])
+    )
+
+    # ── Reduce 단계: 부분 요약을 하나의 최종 요약으로 통합 ────────────────────
+    combined = "\n\n".join(f"[Part {i + 1}]\n{s}" for i, s in enumerate(partial_summaries))
+    try:
+        final_response = await model.ainvoke(
+            [
+                SystemMessage(content="You are a summarization assistant."),
+                HumanMessage(
+                    content=(
+                        "The following are partial summaries of a large document. "
+                        "Consolidate them into a single, coherent, and concise summary:\n\n"
+                        + combined
+                    )
+                ),
+            ]
+        )
+        return _extract(final_response.content)
+    except Exception as exc:  # noqa: BLE001
+        return f"부분 요약 (통합 실패: {exc}):\n\n" + combined
+
+
 async def delegate_to_agent(task: str, role: str = "researcher") -> str:
     """서브태스크를 전문화된 서브 에이전트에게 위임하고 그 결과를 반환한다.
 
@@ -274,6 +362,7 @@ BASE_TOOLS_REGISTRY: dict[str, Callable[..., Awaitable[str]]] = {
     "run_python": run_python,
     "search_stock_ticker": search_stock_ticker,
     "get_stock_price": get_stock_price,
+    "summarize_large_text": summarize_large_text,
 }
 
 BASE_TOOLS_SCHEMA: list[dict[str, Any]] = [
@@ -383,6 +472,31 @@ BASE_TOOLS_SCHEMA: list[dict[str, Any]] = [
                     }
                 },
                 "required": ["ticker"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "summarize_large_text",
+            "description": (
+                "Split a large text into chunks and summarize each chunk in parallel using a "
+                "Map-Reduce approach, then consolidate the partial summaries into a single "
+                "coherent summary. Use this tool when the text is too large to summarize in one call."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The full text to summarize.",
+                    },
+                    "chunk_size": {
+                        "type": "integer",
+                        "description": "Maximum number of characters per chunk. Defaults to 4000.",
+                    },
+                },
+                "required": ["text"],
             },
         },
     },

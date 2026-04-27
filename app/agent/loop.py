@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from functools import lru_cache  # 표준 라이브러리 메모이제이션
 from typing import Any, AsyncIterator
@@ -234,13 +235,17 @@ async def run_agent(
         working_messages.append(_message_from_ai(response))
 
         if response.tool_calls:
-            # ── tool 호출 처리 ───────────────────────────────────────────
-            for tc in response.tool_calls:
+            # ── tool 호출 처리 (병렬 실행) ───────────────────────────────────
+            async def _run_tool(tc: dict[str, Any]) -> str:
+                return await execute_tool(tc["name"], tc["args"])
+
+            results: list[str] = list(
+                await asyncio.gather(*[_run_tool(tc) for tc in response.tool_calls])
+            )
+
+            for tc, result in zip(response.tool_calls, results):
                 fn_name = tc["name"]
                 fn_args = tc["args"]
-
-                # 실제 도구 실행 (네트워크 요청, DB 조회 등 I/O 발생 가능)
-                result = await execute_tool(fn_name, fn_args)
                 tool_calls_made.append(
                     ToolCallRecord(
                         tool_name=fn_name,
@@ -324,26 +329,29 @@ async def stream_agent(
         working_messages.append(_message_from_ai(response))
 
         if response.tool_calls:
-            # ── tool 호출 처리 ───────────────────────────────────────────
+            # ── tool 호출 처리 (병렬 실행) ───────────────────────────────────
+            # SSE 알림은 순서대로 먼저 전송한 뒤 모든 도구를 동시에 실행한다.
             for tc in response.tool_calls:
-                fn_name = tc["name"]
-                fn_args = tc["args"]
-
-                # 클라이언트에 도구 실행 알림 이벤트 전송
                 yield (
                     "event: tool_call\ndata: "
-                    + json.dumps({"tool": fn_name, "arguments": fn_args})
+                    + json.dumps({"tool": tc["name"], "arguments": tc["args"]})
                     + "\n\n"
                 )
 
-                # 실제 도구 실행
-                result = await execute_tool(fn_name, fn_args)
+            async def _run_tool_stream(tc: dict[str, Any]) -> str:
+                return await execute_tool(tc["name"], tc["args"])
+
+            tool_results: list[str] = list(
+                await asyncio.gather(*[_run_tool_stream(tc) for tc in response.tool_calls])
+            )
+
+            for tc, result in zip(response.tool_calls, tool_results):
                 working_messages.append(
                     Message(
                         role="tool",
                         content=result,
                         tool_call_id=tc["id"],
-                        name=fn_name,
+                        name=tc["name"],
                     )
                 )
 

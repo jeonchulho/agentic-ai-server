@@ -16,6 +16,8 @@ Orchestrator(메인 에이전트)가 ``delegate_to_agent`` 도구를 통해 복�
 """
 from __future__ import annotations
 
+import asyncio
+from functools import lru_cache
 from typing import Any
 
 from langchain_core.messages import (
@@ -49,6 +51,21 @@ def _extract_text(content: Any) -> str:
     return ""
 
 
+@lru_cache(maxsize=1)
+def _get_base_model_with_tools():
+    """BASE_TOOLS_SCHEMA 가 바인딩된 서브 에이전트 전용 모델을 반환한다.
+
+    ``bind_tools(BASE_TOOLS_SCHEMA)`` 는 JSON 스키마 직렬화·래퍼 객체 생성 비용이
+    수백 µs 수준이지만, 서브 에이전트가 호출될 때마다 반복되는 낭비를 없애기 위해
+    ``@lru_cache(maxsize=1)`` 로 프로세스 수명 동안 결과를 재사용한다.
+
+    순환 임포트 방지를 위해 ``BASE_TOOLS_SCHEMA`` 를 함수 내부에서 지연 임포트한다.
+    """
+    from app.agent.tools import BASE_TOOLS_SCHEMA  # noqa: PLC0415
+
+    return get_chat_model().bind_tools(BASE_TOOLS_SCHEMA)
+
+
 async def run_sub_agent(
     task: str,
     role: str = "researcher",
@@ -58,15 +75,10 @@ async def run_sub_agent(
 
     동작 흐름:
       1. 역할에 맞는 시스템 프롬프트를 선택한다.
-      2. BASE_TOOLS_SCHEMA 가 바인딩된 LLM 인스턴스를 생성한다.
-         (``delegate_to_agent`` 제외로 재귀 위임 방지)
+      2. 캐시된 BASE_TOOLS_SCHEMA 바인딩 모델을 가져온다.
       3. task 를 첫 번째 HumanMessage 로 주입하여 에이전틱 루프를 실행한다.
-      4. 최종 텍스트 답변을 반환한다.
-
-    순환 임포트 방지:
-        ``BASE_TOOLS_REGISTRY`` 와 ``BASE_TOOLS_SCHEMA`` 는
-        tools.py 에서 지연 임포트(lazy import)한다.
-        (tools.py 가 sub_agent.py 를 임포트하는 것을 피하기 위함)
+      4. 여러 tool call 이 동시에 발생할 경우 asyncio.gather() 로 병렬 실행한다.
+      5. 최종 텍스트 답변을 반환한다.
 
     Args:
         task:           서브 에이전트가 수행할 구체적인 태스크 설명.
@@ -80,13 +92,12 @@ async def run_sub_agent(
         SubAgentMaxIterationsExceeded: max_iterations 내에 최종 답변을 내지 못한 경우.
     """
     # 순환 임포트 방지 — 함수 호출 시점에 임포트
-    from app.agent.tools import BASE_TOOLS_REGISTRY, BASE_TOOLS_SCHEMA  # noqa: PLC0415
+    from app.agent.tools import BASE_TOOLS_REGISTRY  # noqa: PLC0415
 
     system_prompt = get_sub_agent_prompt(role)
 
-    # 서브 에이전트 전용 tool-bound 모델
-    # (오케스트레이터와 별도 bind_tools 호출 — BASE_TOOLS_SCHEMA 사용)
-    model = get_chat_model().bind_tools(BASE_TOOLS_SCHEMA)
+    # 캐시된 tool-bound 모델 재사용
+    model = _get_base_model_with_tools()
 
     # 독립적인 대화 기록 — 오케스트레이터 컨텍스트와 완전히 격리
     messages: list[BaseMessage] = [
@@ -99,16 +110,21 @@ async def run_sub_agent(
         messages.append(response)
 
         if response.tool_calls:
-            # ── 도구 실행 ──────────────────────────────────────────────────
-            for tc in response.tool_calls:
+            # ── 도구 병렬 실행 ─────────────────────────────────────────────
+            async def _run_one(tc: dict[str, Any]) -> str:
                 fn = BASE_TOOLS_REGISTRY.get(tc["name"])
                 if fn is None:
-                    result = f"Error: unknown tool '{tc['name']}'"
-                else:
-                    try:
-                        result = await fn(**tc["args"])
-                    except Exception as exc:  # noqa: BLE001
-                        result = f"Tool execution error: {exc}"
+                    return f"Error: unknown tool '{tc['name']}'"
+                try:
+                    return await fn(**tc["args"])
+                except Exception as exc:  # noqa: BLE001
+                    return f"Tool execution error: {exc}"
+
+            results: list[str] = list(
+                await asyncio.gather(*[_run_one(tc) for tc in response.tool_calls])
+            )
+
+            for tc, result in zip(response.tool_calls, results):
                 messages.append(
                     ToolMessage(content=result, tool_call_id=tc["id"])
                 )
